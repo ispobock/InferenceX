@@ -77,7 +77,6 @@ python3 -m sglang.launch_server \
     --dist-init-addr "${MASTER_ADDR}:${MASTER_PORT}" \
     --host 0.0.0.0 --port "$PORT" \
     --mem-fraction-static 0.82 \
-    --disable-radix-cache \
     $DP_ARGS \
     $SPEC_ARGS \
     $EVAL_CONTEXT_ARGS \
