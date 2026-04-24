@@ -2417,6 +2417,78 @@ glm5-fp8-h200-sglang:
     search-space:
     - { tp: 8, conc-start: 4, conc-end: 64 }
 
+# DeepSeek-V4-Pro on H200, SGLang aggregated across 2 nodes (TP=16).
+# Recipe follows the SGLang DeepSeek-V4 cookbook Pro/H200 path:
+# https://docs.sglang.io/cookbook/autoregressive/DeepSeek/DeepSeek-V4
+# Uses sgl-project/DeepSeek-V4-Pro-FP8 — an FP8 re-packaging of the upstream
+# FP4 (MXFP4) checkpoint produced for Hopper, where FP4 is not native.
+dsv4-fp8-h200-sglang:
+  image: lmsysorg/sglang:deepseek-v4-hopper
+  model: sgl-project/DeepSeek-V4-Pro-FP8
+  model-prefix: dsv4
+  runner: h200-multinode
+  precision: fp8
+  framework: sglang
+  multinode: true
+  disagg: false
+  seq-len-configs:
+  - isl: 1024
+    osl: 1024
+    search-space:
+    # Low-latency: pure TP=16, EAGLE 3/1/4 (num-steps 3, topk 1, draft-tokens 4).
+    - conc-list: [1, 2, 4, 8, 16, 32]
+      prefill:
+        num-worker: 1
+        tp: 16
+        ep: 1
+        dp-attn: false
+      decode:
+        num-worker: 1
+        tp: 16
+        ep: 1
+        dp-attn: false
+      spec-decoding: mtp
+    # Throughput: TP=16 + DP attention, MTP 1/1/2 (num-steps 1, topk 1, draft-tokens 2).
+    - conc-list: [64, 128, 256, 512]
+      prefill:
+        num-worker: 1
+        tp: 16
+        ep: 16
+        dp-attn: true
+      decode:
+        num-worker: 1
+        tp: 16
+        ep: 16
+        dp-attn: true
+      spec-decoding: mtp
+  - isl: 8192
+    osl: 1024
+    search-space:
+    - conc-list: [1, 2, 4, 8, 16, 32]
+      prefill:
+        num-worker: 1
+        tp: 16
+        ep: 1
+        dp-attn: false
+      decode:
+        num-worker: 1
+        tp: 16
+        ep: 1
+        dp-attn: false
+      spec-decoding: mtp
+    - conc-list: [64, 128, 256]
+      prefill:
+        num-worker: 1
+        tp: 16
+        ep: 16
+        dp-attn: true
+      decode:
+        num-worker: 1
+        tp: 16
+        ep: 16
+        dp-attn: true
+      spec-decoding: mtp
+
 dsr1-fp8-h200-trt:
   image: nvcr.io#nvidia/tensorrt-llm/release:1.1.0rc2.post2
   model: deepseek-ai/DeepSeek-R1-0528

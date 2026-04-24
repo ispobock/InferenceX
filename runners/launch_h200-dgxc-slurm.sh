@@ -8,6 +8,55 @@ set -x
 
 if [[ "$IS_MULTINODE" == "true" ]]; then
 
+    # Direct SGLang 2-node aggregated path — bypasses srt-slurm because the
+    # DeepSeek-V4 H200 Pro recipe is a plain `sglang.launch_server --nnodes 2`
+    # deployment with no Dynamo frontend and no srt-slurm recipe upstream.
+    if [[ $FRAMEWORK == "sglang" && $MODEL_PREFIX == "dsv4" && $PRECISION == "fp8" ]]; then
+        export MODEL_PATH="/models/DeepSeek-V4-Pro-FP8"
+
+        HF_HUB_CACHE_MOUNT="/models/gharunners/hf-hub-cache"
+        SQUASH_FILE="/data/gharunners/containers/$(echo "$IMAGE" | sed 's/[\/:@#]/_/g').sqsh"
+        DOCKER_IMAGE=$(echo "$IMAGE" | sed 's/#/\//g')
+        LOCK_FILE="${SQUASH_FILE}.lock"
+
+        NNODES=2
+
+        salloc --partition=$SLURM_PARTITION --account=$SLURM_ACCOUNT \
+            --nodes=$NNODES --gres=gpu:8 --exclusive \
+            --time=180 --no-shell --job-name="$RUNNER_NAME"
+        JOB_ID=$(squeue --name="$RUNNER_NAME" -u "$USER" -h -o %A | head -n1)
+
+        # Import the image squash file (serialized via flock so parallel runners
+        # on the same cluster don't race).
+        srun --jobid=$JOB_ID --nodes=1 --ntasks=1 bash -c "
+            export ENROOT_CACHE_PATH=\$HOME/.cache/enroot
+            mkdir -p \$ENROOT_CACHE_PATH
+            exec 9>\"$LOCK_FILE\"
+            flock -w 600 9 || { echo 'Failed to acquire lock for $SQUASH_FILE'; exit 1; }
+            if unsquashfs -l \"$SQUASH_FILE\" > /dev/null 2>&1; then
+                echo 'Squash file already exists and is valid, skipping import'
+            else
+                rm -f \"$SQUASH_FILE\"
+                enroot import -o \"$SQUASH_FILE\" docker://$DOCKER_IMAGE
+            fi
+        "
+
+        # Head node of the allocation — each rank's bench script resolves this
+        # itself from SLURM_JOB_NODELIST, so no need to plumb MASTER_ADDR.
+        srun --jobid=$JOB_ID \
+            --nodes=$NNODES --ntasks=$NNODES --ntasks-per-node=1 \
+            --container-image=$SQUASH_FILE \
+            --container-mounts=$GITHUB_WORKSPACE:/workspace/,$HF_HUB_CACHE_MOUNT:$HF_HUB_CACHE \
+            --no-container-mount-home \
+            --container-workdir=/workspace/ \
+            --no-container-entrypoint \
+            --export=ALL,PORT=8888,MASTER_PORT=29500,MODEL_PATH=$MODEL_PATH \
+            bash benchmarks/multi_node/dsv4_fp8_h200_sglang.sh
+
+        scancel "$JOB_ID" 2>/dev/null || true
+        exit 0
+    fi
+
     # MODEL_PATH: Override with pre-downloaded paths on H200 runner
     # The yaml files specify HuggingFace model IDs for portability, but we use
     # local paths to avoid repeated downloading on the shared H200 cluster.
@@ -29,7 +78,7 @@ if [[ "$IS_MULTINODE" == "true" ]]; then
             exit 1
         fi
     else
-        echo "Unsupported framework: $FRAMEWORK. Supported frameworks are: dynamo-trt, dynamo-sglang"
+        echo "Unsupported framework: $FRAMEWORK. Supported frameworks are: dynamo-trt, dynamo-sglang, sglang (dsv4/fp8)"
         exit 1
     fi
 
